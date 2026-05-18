@@ -221,6 +221,38 @@ def test_session_start_accepts_json_string_payload(tmp_path: Path):
         assert telegram.messages[-1]["text"].startswith("Новая сессия аудита открыта.")
 
 
+def test_event_notifications_include_name_and_username(tmp_path: Path):
+    client, _, _, telegram = build_client(tmp_path)
+    with client:
+        client.post(
+            "/telegram/webhook",
+            params={"token": "telegram-hook"},
+            json={"message": {"chat": {"id": "1001"}, "from": {"username": "admin"}, "text": "/start"}},
+        )
+        client.post(
+            "/salesbot/session/start",
+            json={"client_id": "42"},
+        )
+        response = client.post(
+            "/salesbot/events",
+            params={"token": "salesbot-token"},
+            json={
+                "client": {
+                    "id": "42",
+                    "name": "Alice",
+                    "login": "alice_blog",
+                    "client_type": "instagram",
+                },
+                "message": "screens",
+                "attachments": ["https://example.com/1.png"],
+                "is_input": 1,
+            },
+        )
+        assert response.status_code == 200
+        assert "username: alice_blog" in telegram.messages[-1]["text"]
+        assert "name: Alice" in telegram.messages[-1]["text"]
+
+
 def test_need_more_screens_callback(tmp_path: Path):
     client, _, salesbot, _ = build_client(tmp_path)
     with client:

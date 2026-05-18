@@ -49,9 +49,7 @@ class AuditOrchestrator:
         await self._notify_admins(
             (
                 "Новая сессия аудита открыта.\n"
-                f"client_id: {session.client_id}\n"
-                f"username: {session.instagram_username or '-'}\n"
-                f"name: {session.client_name or '-'}"
+                f"{format_session_identity(session)}"
             )
         )
         return {
@@ -70,6 +68,11 @@ class AuditOrchestrator:
         session = self.repository.get_session_by_client_id(client_id)
         if not session:
             return EventResult("ignored_missing_session", False, 0)
+        session = self.repository.update_session_identity(
+            client_id,
+            client_name=extract_client_name(payload),
+            instagram_username=extract_instagram_username(payload),
+        )
         if session.state in {"processing", "image_pending", "completed", "failed"}:
             return EventResult("ignored_inactive_state", False, len(session.attachments))
 
@@ -85,7 +88,7 @@ class AuditOrchestrator:
         await self._notify_admins(
             (
                 "SalesBot event получен.\n"
-                f"client_id: {client_id}\n"
+                f"{format_session_identity(session)}\n"
                 f"state: {session.state}\n"
                 f"message: {message_text[:120] or '-'}\n"
                 f"attachments_parsed: {len(attachment_urls)}"
@@ -109,7 +112,7 @@ class AuditOrchestrator:
             await self._notify_admins(
                 (
                     "Аудит отправлен в обработку.\n"
-                    f"client_id: {client_id}\n"
+                    f"{format_session_identity(session)}\n"
                     f"screens: {len(session.attachments)}"
                 )
             )
@@ -159,7 +162,7 @@ class AuditOrchestrator:
                     (
                         "Изображение не сгенерировалось на этапе createTask, "
                         "отправлен текстовый аудит.\n"
-                        f"client_id: {client_id}\n"
+                        f"{format_session_identity(session)}\n"
                         f"error: {exc}"
                     )
                 )
@@ -225,7 +228,7 @@ class AuditOrchestrator:
                     (
                         "KIE прислал success, но URL результата не удалось получить. "
                         "Отправлен текстовый аудит.\n"
-                        f"client_id: {session.client_id}\n"
+                        f"{format_session_identity(session)}\n"
                         f"error: {exc}"
                     )
                 )
@@ -236,7 +239,7 @@ class AuditOrchestrator:
             await self._notify_admins(
                 (
                     "Аудит завершен успешно.\n"
-                    f"client_id: {session.client_id}\n"
+                    f"{format_session_identity(session)}\n"
                     f"score: {analysis.overall_score}"
                 )
             )
@@ -249,7 +252,7 @@ class AuditOrchestrator:
         await self._notify_admins(
             (
                 "Изображение не сгенерировалось, отправлен текстовый аудит.\n"
-                f"client_id: {session.client_id}\n"
+                f"{format_session_identity(session)}\n"
                 f"error: {error_message}"
             )
         )
@@ -309,7 +312,7 @@ class AuditOrchestrator:
         user_error: str,
     ) -> None:
         self.repository.complete_job(job_id, status="failed", error=internal_error)
-        self.repository.set_session_state(client_id, "failed", last_error=internal_error)
+        session = self.repository.set_session_state(client_id, "failed", last_error=internal_error)
         await self.salesbot_client.send_callback(
             client_id=client_id,
             message=self.settings.salesbot_fail_message,
@@ -318,7 +321,7 @@ class AuditOrchestrator:
         await self._notify_admins(
             (
                 "Аудит завершился ошибкой.\n"
-                f"client_id: {client_id}\n"
+                f"{format_session_identity(session)}\n"
                 f"error: {internal_error}"
             )
         )
@@ -596,3 +599,29 @@ def extract_kie_error(payload: dict[str, Any]) -> str | None:
         if value:
             return str(value)
     return None
+
+
+def extract_client_name(payload: dict[str, Any]) -> str | None:
+    client = payload.get("client") or {}
+    for key in ("name", "client_name", "full_name"):
+        value = client.get(key) or payload.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def extract_instagram_username(payload: dict[str, Any]) -> str | None:
+    client = payload.get("client") or {}
+    for key in ("instagram_username", "login", "username", "nick", "nickname"):
+        value = client.get(key) or payload.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def format_session_identity(session: Any) -> str:
+    return (
+        f"client_id: {session.client_id}\n"
+        f"username: {session.instagram_username or '-'}\n"
+        f"name: {session.client_name or '-'}"
+    )

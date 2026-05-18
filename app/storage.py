@@ -191,6 +191,30 @@ class SQLiteRepository:
             )
         return self.get_session_by_client_id(client_id)  # type: ignore[return-value]
 
+    def update_session_identity(
+        self,
+        client_id: str,
+        *,
+        client_name: str | None = None,
+        instagram_username: str | None = None,
+    ) -> SessionRecord:
+        session = self.get_session_by_client_id(client_id)
+        if not session:
+            raise KeyError(f"Session not found for client_id={client_id}")
+        next_name = (client_name or "").strip() or session.client_name
+        next_username = (instagram_username or "").strip() or session.instagram_username
+        now = utcnow_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE sessions
+                SET client_name = ?, instagram_username = ?, updated_at = ?
+                WHERE client_id = ?
+                """,
+                (next_name, next_username, now, client_id),
+            )
+        return self.get_session_by_client_id(client_id)  # type: ignore[return-value]
+
     def set_session_state(
         self,
         client_id: str,
