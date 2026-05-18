@@ -6,7 +6,9 @@ FastAPI-сервис, который связывает `SalesBot` + `KIE` + Tel
 
 1. `SalesBot` открывает intake-сессию через `POST /salesbot/session/start`.
 2. Пользователь присылает 2 скриншота профиля в Instagram Direct.
-3. `SalesBot` пересылает входящие сообщения на `POST /salesbot/events?token=...`.
+3. `SalesBot` может передавать входящие сообщения двумя способами:
+   - project webhook на `POST /salesbot/events?token=...`
+   - явный `POST /salesbot/session/input?token=...` из блока/состояния с переменной `#{attachments}`
 4. После сообщения `ГОТОВО` сервис:
    - анализирует скриншоты через KIE `GPT-5.2`
    - получает структурный JSON-аудит на русском
@@ -96,7 +98,39 @@ JSON body:
 
 Сервис ожидает стандартный SalesBot payload с `client`, `message`, `attachments`, `is_input`.
 
-### 3. Ветки callback воронки
+### 3. Надежный сбор нескольких фото через `#{attachments}`
+
+Если пользователи часто отправляют 2 скриншота одним сообщением, лучше передавать вложения в backend не только через project webhook, а отдельным API-запросом из SalesBot.
+
+Используйте endpoint:
+
+`https://YOUR-DOMAIN/salesbot/session/input?token=YOUR_SALESBOT_WEBHOOK_TOKEN`
+
+JSON body:
+
+```json
+{
+  "client_id": "#{client_id}",
+  "message": "#{question}",
+  "attachments": "#{attachments}",
+  "attachment_url": "#{attachment_url}",
+  "client_name": "#{name}",
+  "instagram_username": "#{login}"
+}
+```
+
+Где:
+
+- `#{attachments}` — JSON-массив URL вложений пользователя из SalesBot
+- `#{attachment_url}` — запасной одиночный URL, если платформа прислала только один файл
+
+Рекомендуемая схема:
+
+- пользователь доходит до блока с инструкцией
+- на вложение/ответ пользователя SalesBot вызывает `POST /salesbot/session/input`
+- когда пользователь отправляет `ГОТОВО`, SalesBot снова вызывает `POST /salesbot/session/input`
+
+### 4. Ветки callback воронки
 
 Нужно создать три callback-ветки:
 

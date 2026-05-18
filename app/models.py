@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -39,3 +41,12 @@ class AnalysisPayload(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+
+
+class SessionInputRequest(BaseModel):
+    client_id: str = Field(min_length=1)
+    message: str | None = None
+    attachments: Any = None
+    attachment_url: str | None = None
+    client_name: str | None = None
+    instagram_username: str | None = None

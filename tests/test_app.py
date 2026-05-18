@@ -365,6 +365,49 @@ def test_nested_attachment_payloads_are_parsed(tmp_path: Path):
         assert any("session_screens_total: 2" in message["text"] for message in telegram.messages)
 
 
+def test_session_input_accepts_salebot_attachments_array(tmp_path: Path):
+    client, kie, _, telegram = build_client(tmp_path)
+    with client:
+        client.post(
+            "/telegram/webhook",
+            params={"token": "telegram-hook"},
+            json={"message": {"chat": {"id": "1001"}, "from": {"username": "admin"}, "text": "/start"}},
+        )
+        client.post(
+            "/salesbot/session/start",
+            json={"client_id": "42", "project_id": "project-1", "client_type": "instagram"},
+        )
+        response = client.post(
+            "/salesbot/session/input",
+            params={"token": "salesbot-token"},
+            json={
+                "client_id": "42",
+                "message": "",
+                "attachments": '["https://example.com/1.png","https://example.com/2.png"]',
+                "client_name": "Alice",
+                "instagram_username": "alice_blog",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["action"] == "attachments_collected"
+
+        response = client.post(
+            "/salesbot/session/input",
+            params={"token": "salesbot-token"},
+            json={
+                "client_id": "42",
+                "message": "ГОТОВО",
+                "attachments": "[]",
+                "client_name": "Alice",
+                "instagram_username": "alice_blog",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["action"] == "processing_started"
+        assert kie.analysis_calls == [["https://example.com/1.png", "https://example.com/2.png"]]
+        assert any("Аудит отправлен в обработку." in message["text"] for message in telegram.messages)
+
+
 def test_invalid_tokens_are_rejected(tmp_path: Path):
     client, _, _, _ = build_client(tmp_path)
     with client:

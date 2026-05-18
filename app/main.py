@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.clients import KieClient, SalesBotClient, TelegramBotClient
 from app.config import Settings, get_settings
-from app.models import HealthResponse, SessionStartRequest
+from app.models import HealthResponse, SessionInputRequest, SessionStartRequest
 from app.service import AuditOrchestrator
 from app.storage import SQLiteRepository
 
@@ -65,15 +65,7 @@ def create_app(
 
     @app.post("/salesbot/session/start")
     async def start_session(request: Request) -> dict[str, Any]:
-        payload_raw = await request.json()
-        if isinstance(payload_raw, str):
-            try:
-                payload_raw = json.loads(payload_raw)
-            except json.JSONDecodeError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Invalid JSON string payload: {exc}",
-                ) from exc
+        payload_raw = await _read_json_body(request)
         try:
             payload = SessionStartRequest.model_validate(payload_raw)
         except ValidationError as exc:
@@ -82,6 +74,46 @@ def create_app(
                 detail=exc.errors(),
             ) from exc
         return await orchestrator.open_session(payload)
+
+    @app.post("/salesbot/session/input")
+    async def session_input(
+        request: Request,
+        background_tasks: BackgroundTasks,
+        token: str = Query(...),
+    ) -> dict[str, Any]:
+        if token != app_settings.salesbot_webhook_token:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid token")
+        payload_raw = await _read_json_body(request)
+        try:
+            payload = SessionInputRequest.model_validate(payload_raw)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=exc.errors(),
+            ) from exc
+        normalized_payload = {
+            "is_input": 1,
+            "client": {
+                "id": payload.client_id,
+                "name": payload.client_name,
+                "login": payload.instagram_username,
+                "instagram_username": payload.instagram_username,
+            },
+            "message": payload.message or "",
+            "attachments": (
+                payload.attachments
+                if payload.attachments not in (None, "")
+                else payload.attachment_url or []
+            ),
+        }
+        result = await orchestrator.ingest_salesbot_event(normalized_payload)
+        if result.schedule_processing:
+            background_tasks.add_task(orchestrator.process_session, payload.client_id)
+        return {
+            "status": "ok",
+            "action": result.action,
+            "attachments_count": result.attachments_count,
+        }
 
     @app.post("/salesbot/events")
     async def salesbot_events(
@@ -128,3 +160,16 @@ def create_app(
         return await orchestrator.handle_telegram_update(payload)
 
     return app
+
+
+async def _read_json_body(request: Request) -> Any:
+    payload_raw = await request.json()
+    if isinstance(payload_raw, str):
+        try:
+            return json.loads(payload_raw)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid JSON string payload: {exc}",
+            ) from exc
+    return payload_raw
