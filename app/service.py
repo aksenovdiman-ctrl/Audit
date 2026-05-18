@@ -122,13 +122,19 @@ class AuditOrchestrator:
             analysis = await self._analyze_session(session.attachments)
             self.repository.save_analysis(job.id, analysis.model_dump())
             try:
+                image_input_urls = build_image_input_urls(
+                    screenshot_urls=session.attachments,
+                    style_reference_url=self.settings.style_reference_image_url,
+                )
                 image_prompt = build_image_prompt(
                     analysis=analysis,
                     brand_name=self.settings.brand_name,
                 )
-                task_id = await self.kie_client.create_image_task(
+                task_id = await self.kie_client.create_image_to_image_task(
                     prompt=image_prompt,
                     callback_url=self.settings.kie_callback_url(job.id),
+                    input_urls=image_input_urls,
+                    aspect_ratio="3:4",
                 )
                 self.repository.set_image_task(job.id, task_id)
                 self.repository.set_session_state(client_id, "image_pending")
@@ -316,13 +322,18 @@ class AuditOrchestrator:
 
 
 def build_analysis_prompt(*, min_images: int, max_images: int) -> str:
+    screenshots_line = (
+        f"- Скриншотов будет ровно {min_images}."
+        if min_images == max_images
+        else f"- Скриншотов может быть от {min_images} до {max_images}."
+    )
     return f"""
 Ты — эксперт по аудиту Instagram-профилей и конверсии.
 Проанализируй присланные скриншоты профиля Instagram и верни ТОЛЬКО JSON без markdown и без пояснений.
 
 Правила:
 - Ответ строго на русском языке.
-- Скриншотов может быть от {min_images} до {max_images}.
+{screenshots_line}
 - Не выдумывай факты, которых не видно на скриншотах.
 - Оцени профиль как маркетолог и как контент-стратег.
 - Учитывай: аватар, имя, ник, био, закрепы, визуал ленты, оффер, понятность позиционирования, доверие, призыв к действию.
@@ -350,18 +361,161 @@ def build_analysis_prompt(*, min_images: int, max_images: int) -> str:
 
 def build_image_prompt(*, analysis: AnalysisPayload, brand_name: str) -> str:
     strengths = "; ".join(analysis.strengths[:3])
-    quick_wins = "; ".join(analysis.quick_wins[:3])
-    return (
-        f"Create one polished Instagram profile audit summary visual for brand {brand_name}. "
-        f"Style: modern social media consultant, premium but friendly, clean layout, warm light background, "
-        f"subtle phone and interface motifs, high contrast accents, no dense paragraphs, minimal decorative text, "
-        f"focus on the feeling of clarity and growth. "
-        f"The profile score is {analysis.overall_score}/100. "
-        f"Niche guess: {analysis.niche_guess}. "
-        f"Main strengths: {strengths}. "
-        f"Quick wins: {quick_wins}. "
-        f"Image brief: {analysis.image_brief}."
-    )
+    problems = "; ".join(analysis.problems[:4])
+    quick_wins = "; ".join(analysis.quick_wins[:4])
+    return f"""
+Создай изображение в формате 3:4 — handwritten аудит Instagram-профиля в стиле Pinterest bullet journal.
+
+ВАЖНО:
+в генерацию будут загружены 3 изображения:
+
+1 и 2 изображения — скрины Instagram-профиля.
+Используй из них:
+— аватарку
+— ник
+— имя
+— описание
+— статистику
+— хайлайтсы
+— посты
+— визуал ленты
+— оформление профиля
+— контент профиля.
+
+3 изображение — референс стиля.
+Используй ТОЛЬКО его стиль:
+— оформление страницы
+— bullet journal aesthetic
+— handwritten-подачу
+— doodles
+— текстуры
+— расположение блоков
+— цвета
+— маркеры
+— стикеры
+— стиль заполнения.
+
+Не копируй контент с 3 изображения.
+Только визуальный стиль.
+
+Сделай итог как полноценную handwritten-страницу маркетингового разбора профиля для бренда {brand_name}.
+
+Стиль:
+живой Pinterest planner / handwritten notebook / aesthetic journal.
+
+Белая бумага в клетку.
+Много ручных заметок.
+Текстовыделители.
+Маркеры.
+Чекбоксы.
+Doodles.
+Стрелки.
+Небольшие стикеры.
+Эффект реально заполненного вручную блокнота.
+
+Цвета:
+розовый,
+голубой,
+салатовый,
+жёлтый,
+оранжевый,
+сиреневый.
+
+Наверху:
+большой handwritten заголовок:
+
+АУДИТ INSTAGRAM-ПРОФИЛЯ
+
+Ниже:
+сделай handwritten-блок профиля на основе 1 и 2 изображений:
+— аватарка
+— ник
+— имя
+— статистика
+— описание
+— ссылка
+— хайлайтсы
+— мини-превью постов.
+
+Добавь МНОГО handwritten-анализа по профилю.
+
+Блоки:
+
+СИЛЬНЫЕ СТОРОНЫ
+✓ визуал
+✓ экспертность
+✓ контент
+✓ доверие
+✓ личный бренд
+✓ позиционирование
+
+ТОЧКИ РОСТА
+— где теряются заявки
+— что выглядит слабо
+— что мешает продажам
+— чего не хватает в упаковке
+— слабые места контента
+
+КРИТИЧНЫЕ ОШИБКИ
+— слабый оффер
+— нет CTA
+— мало кейсов
+— нет прогревов
+— нет воронки
+— профиль не удерживает аудиторию
+
+ЧТО УСИЛИТ ПРОДАЖИ
+□ добавить кейсы
+□ усилить stories
+□ внедрить Telegram
+□ делать больше Reels
+□ усилить прогрев
+□ добавить CTA
+□ усилить личный бренд
+
+КОНТЕНТ
+— Reels
+— Stories
+— экспертный контент
+— вовлекающий контент
+— продающий контент
+— прогревы
+
+ВОРОНКА
+REELS → STORIES → DIRECT → TELEGRAM → ПРОДАЖА
+
+Добавь:
+— handwritten-комментарии на полях
+— выделения маркером
+— doodles
+— звездочки
+— кружочки
+— стрелки
+— мини-графики
+— иконки денег, охватов и лайков
+
+Главное:
+итог должен выглядеть как реальная handwritten-страница разбора профиля от сильного маркетолога, а не как шаблонный digital-дизайн.
+
+Дополнительные ориентиры по анализу профиля:
+— Общая оценка: {analysis.overall_score}/100
+— Предполагаемая ниша: {analysis.niche_guess}
+— Сильные стороны: {strengths}
+— Точки роста и слабые места: {problems}
+— Что усилит продажи в первую очередь: {quick_wins}
+— Дополнительный бриф: {analysis.image_brief}
+""".strip()
+
+
+def build_image_input_urls(
+    *,
+    screenshot_urls: list[str],
+    style_reference_url: str,
+) -> list[str]:
+    urls = list(screenshot_urls[:2])
+    if style_reference_url:
+        urls.append(style_reference_url)
+    return urls
 
 
 def extract_attachment_urls(attachments: Any) -> list[str]:

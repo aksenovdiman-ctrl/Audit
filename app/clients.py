@@ -32,17 +32,67 @@ class KieClient:
             return await self._chat_completion(prompt=prompt, image_urls=uploaded_urls)
 
     async def create_image_task(self, prompt: str, callback_url: str) -> str:
+        return await self._create_task(
+            prompt=prompt,
+            callback_url=callback_url,
+            input_urls=None,
+        )
+
+    async def create_image_to_image_task(
+        self,
+        *,
+        prompt: str,
+        callback_url: str,
+        input_urls: Sequence[str],
+        aspect_ratio: str = "3:4",
+    ) -> str:
+        urls = list(input_urls)
+        if not self.settings.use_direct_attachment_urls:
+            urls = await self._upload_remote_images(urls)
+        try:
+            return await self._create_task(
+                prompt=prompt,
+                callback_url=callback_url,
+                input_urls=urls,
+                aspect_ratio=aspect_ratio,
+            )
+        except ExternalAPIError:
+            if not self.settings.use_direct_attachment_urls:
+                raise
+            uploaded_urls = await self._upload_remote_images(urls)
+            return await self._create_task(
+                prompt=prompt,
+                callback_url=callback_url,
+                input_urls=uploaded_urls,
+                aspect_ratio=aspect_ratio,
+            )
+
+    async def _create_task(
+        self,
+        *,
+        prompt: str,
+        callback_url: str,
+        input_urls: Sequence[str] | None,
+        aspect_ratio: str = "auto",
+    ) -> str:
+        payload = {
+            "model": (
+                "gpt-image-2-image-to-image"
+                if input_urls
+                else "gpt-image-2-text-to-image"
+            ),
+            "callBackUrl": callback_url,
+            "input": {
+                "prompt": prompt,
+                "aspect_ratio": aspect_ratio,
+            },
+        }
+        if input_urls:
+            payload["input"]["input_urls"] = list(input_urls)
         response = await self._client.post(
             f"{self.settings.kie_api_base_url}/api/v1/jobs/createTask",
             headers=self._auth_headers(),
-            json={
-                "model": "gpt-image-2-text-to-image",
-                "callBackUrl": callback_url,
-                "input": {
-                    "prompt": prompt,
-                    "aspect_ratio": "auto",
-                },
-            },
+            json=payload,
         )
         payload = self._decode_json(response)
         try:

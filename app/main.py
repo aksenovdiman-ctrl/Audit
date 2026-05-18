@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, status
+from fastapi.staticfiles import StaticFiles
 
 from app.clients import KieClient, SalesBotClient, TelegramBotClient
 from app.config import Settings, get_settings
@@ -20,6 +22,7 @@ def create_app(
     salesbot_client: SalesBotClient | None = None,
     telegram_client: TelegramBotClient | None = None,
 ) -> FastAPI:
+    project_root = Path(__file__).resolve().parent.parent
     app_settings = settings or get_settings()
     repo = repository or SQLiteRepository(app_settings.database_path)
     kie = kie_client or KieClient(app_settings)
@@ -50,6 +53,9 @@ def create_app(
     app.state.settings = app_settings
     app.state.repository = repo
     app.state.orchestrator = orchestrator
+    static_dir = project_root / "static"
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     @app.get("/health", response_model=HealthResponse)
     async def health() -> HealthResponse:
@@ -104,4 +110,3 @@ def create_app(
         return await orchestrator.handle_telegram_update(payload)
 
     return app
-

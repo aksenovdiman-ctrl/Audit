@@ -5,12 +5,15 @@ FastAPI-сервис, который связывает `SalesBot` + `KIE` + Tel
 ## Что делает сервис
 
 1. `SalesBot` открывает intake-сессию через `POST /salesbot/session/start`.
-2. Пользователь присылает 3-6 скриншотов профиля в Instagram Direct.
+2. Пользователь присылает 2 скриншота профиля в Instagram Direct.
 3. `SalesBot` пересылает входящие сообщения на `POST /salesbot/events?token=...`.
 4. После сообщения `ГОТОВО` сервис:
    - анализирует скриншоты через KIE `GPT-5.2`
    - получает структурный JSON-аудит на русском
-   - запускает KIE `GPT Image 2` для одной summary-card
+   - запускает KIE `GPT Image 2 Image-to-Image` с 3 изображениями:
+     1. первый скрин профиля
+     2. второй скрин профиля
+     3. style-reference URL из `STYLE_REFERENCE_IMAGE_URL`
 5. Когда KIE присылает callback, сервис отправляет обратно в SalesBot callback `audit_ready`.
 6. SalesBot сам доставляет результат пользователю в Instagram.
 7. Telegram-бот принимает `/start` и потом получает админ-уведомления о старте, успехе и ошибках.
@@ -44,8 +47,13 @@ FastAPI-сервис, который связывает `SalesBot` + `KIE` + Tel
 Критично:
 
 - `PUBLIC_BASE_URL` должен быть публичным HTTPS-адресом
+- `STYLE_REFERENCE_IMAGE_URL` должен указывать на публично доступный style-reference image
 - `KIE_CALLBACK_TOKEN`, `SALESBOT_WEBHOOK_TOKEN`, `TELEGRAM_WEBHOOK_TOKEN` должны быть длинными случайными токенами
 - ключи, которые ранее уже были опубликованы в переписке, перед запуском нужно обязательно ротировать
+
+В этом проекте можно хранить style-reference локально в `static/style-reference.jpeg` и отдавать его по адресу:
+
+`https://YOUR-DOMAIN/static/style-reference.jpeg`
 
 ## Запуск локально
 
@@ -62,7 +70,7 @@ uvicorn app.asgi:app --host 0.0.0.0 --port 8000 --reload
 
 В блоке SalesBot отправьте пользователю сообщение:
 
-`Пришлите 3-6 скриншотов профиля и затем сообщением ГОТОВО.`
+`Пришлите 2 скриншота профиля и затем сообщением ГОТОВО.`
 
 В этом же блоке добавьте внешний `POST` на:
 
@@ -115,6 +123,6 @@ Webhook Telegram:
 
 - happy path
 - нехватку скриншотов
-- дедупликацию и лимит в 6 файлов
+- дедупликацию и лимит в 2 файла
 - reject на неверные webhook token
 - text-only fallback при неуспехе генерации картинки

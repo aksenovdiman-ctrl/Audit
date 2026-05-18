@@ -28,6 +28,7 @@ def _get_bool(name: str, default: bool) -> bool:
 class Settings:
     public_base_url: str
     database_path: Path
+    style_reference_image_url: str
     kie_api_key: str
     kie_api_base_url: str
     kie_file_upload_base_url: str
@@ -52,6 +53,7 @@ class Settings:
         return cls(
             public_base_url=_require_env("PUBLIC_BASE_URL").rstrip("/"),
             database_path=Path(os.getenv("DATABASE_PATH", "./data/audit_bot.sqlite3")),
+            style_reference_image_url=os.getenv("STYLE_REFERENCE_IMAGE_URL", "").strip(),
             kie_api_key=_require_env("KIE_API_KEY"),
             kie_api_base_url=os.getenv("KIE_API_BASE_URL", "https://api.kie.ai").rstrip("/"),
             kie_file_upload_base_url=os.getenv(
@@ -73,8 +75,8 @@ class Settings:
             telegram_bot_token=_require_env("TELEGRAM_BOT_TOKEN"),
             telegram_webhook_token=_require_env("TELEGRAM_WEBHOOK_TOKEN"),
             brand_name=os.getenv("BRAND_NAME", "audit_inst_bot"),
-            session_min_images=int(os.getenv("SESSION_MIN_IMAGES", "3")),
-            session_max_images=int(os.getenv("SESSION_MAX_IMAGES", "6")),
+            session_min_images=int(os.getenv("SESSION_MIN_IMAGES", "2")),
+            session_max_images=int(os.getenv("SESSION_MAX_IMAGES", "2")),
             http_timeout_seconds=float(os.getenv("HTTP_TIMEOUT_SECONDS", "30")),
         )
 

@@ -13,6 +13,7 @@ from app.storage import SQLiteRepository
 class FakeKieClient:
     def __init__(self) -> None:
         self.created_prompts: list[str] = []
+        self.created_input_urls: list[list[str]] = []
         self.analysis_calls: list[list[str]] = []
         self.image_task_id = "task_gptimage_123"
         self.force_image_failure = False
@@ -32,6 +33,18 @@ class FakeKieClient:
 
     async def create_image_task(self, prompt: str, callback_url: str) -> str:
         self.created_prompts.append(prompt)
+        return self.image_task_id
+
+    async def create_image_to_image_task(
+        self,
+        *,
+        prompt: str,
+        callback_url: str,
+        input_urls: list[str],
+        aspect_ratio: str = "3:4",
+    ) -> str:
+        self.created_prompts.append(prompt)
+        self.created_input_urls.append(input_urls)
         return self.image_task_id
 
     async def resolve_image_url(self, *, task_id: str, callback_payload: dict | None = None) -> str:
@@ -81,6 +94,7 @@ def build_settings(tmp_path: Path) -> Settings:
     return Settings(
         public_base_url="https://audit.example.com",
         database_path=tmp_path / "audit_bot.sqlite3",
+        style_reference_image_url="https://cdn.example.com/style-reference.png",
         kie_api_key="kie-key",
         kie_api_base_url="https://api.kie.ai",
         kie_file_upload_base_url="https://kieai.redpandaai.co",
@@ -96,8 +110,8 @@ def build_settings(tmp_path: Path) -> Settings:
         telegram_bot_token="telegram-token",
         telegram_webhook_token="telegram-hook",
         brand_name="audit_inst_bot",
-        session_min_images=3,
-        session_max_images=6,
+        session_min_images=2,
+        session_max_images=2,
         http_timeout_seconds=5.0,
     )
 
@@ -156,7 +170,6 @@ def test_happy_path_with_callback_delivery(tmp_path: Path):
                 attachments=[
                     "https://example.com/1.png",
                     "https://example.com/2.png",
-                    "https://example.com/3.png",
                 ],
             ),
         )
@@ -169,8 +182,14 @@ def test_happy_path_with_callback_delivery(tmp_path: Path):
         )
         assert response.status_code == 200
         assert response.json()["action"] == "processing_started"
-        assert kie.analysis_calls == [["https://example.com/1.png", "https://example.com/2.png", "https://example.com/3.png"]]
+        assert kie.analysis_calls == [["https://example.com/1.png", "https://example.com/2.png"]]
         assert len(kie.created_prompts) == 1
+        assert kie.created_input_urls == [[
+            "https://example.com/1.png",
+            "https://example.com/2.png",
+            "https://cdn.example.com/style-reference.png",
+        ]]
+        assert "АУДИТ INSTAGRAM-ПРОФИЛЯ" in kie.created_prompts[0]
 
         callback_response = client.post(
             "/kie/callback",
@@ -196,7 +215,7 @@ def test_need_more_screens_callback(tmp_path: Path):
             json=salesbot_payload(
                 client_id="42",
                 message="ГОТОВО",
-                attachments=["https://example.com/1.png", "https://example.com/2.png"],
+                attachments=["https://example.com/1.png"],
             ),
         )
         assert response.status_code == 200
@@ -221,8 +240,7 @@ def test_attachment_dedup_and_cap(tmp_path: Path):
                 attachments=[
                     "https://example.com/1.png",
                     "https://example.com/2.png",
-                    "https://example.com/3.png",
-                    "https://example.com/3.png",
+                    "https://example.com/2.png",
                 ],
             ),
         )
@@ -233,14 +251,12 @@ def test_attachment_dedup_and_cap(tmp_path: Path):
                 client_id="42",
                 message="batch-2",
                 attachments=[
+                    "https://example.com/3.png",
                     "https://example.com/4.png",
-                    "https://example.com/5.png",
-                    "https://example.com/6.png",
-                    "https://example.com/7.png",
                 ],
             ),
         )
-        assert response.json()["attachments_count"] == 6
+        assert response.json()["attachments_count"] == 2
 
 
 def test_invalid_tokens_are_rejected(tmp_path: Path):
@@ -272,7 +288,6 @@ def test_text_only_delivery_if_image_callback_fails(tmp_path: Path):
                 attachments=[
                     "https://example.com/1.png",
                     "https://example.com/2.png",
-                    "https://example.com/3.png",
                 ],
             ),
         )
