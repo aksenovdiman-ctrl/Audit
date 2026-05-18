@@ -76,7 +76,8 @@ class AuditOrchestrator:
         if session.state in {"processing", "image_pending", "completed", "failed"}:
             return EventResult("ignored_inactive_state", False, len(session.attachments))
 
-        attachment_urls = extract_attachment_urls(payload.get("attachments"))
+        raw_attachments = payload.get("attachments")
+        attachment_urls = extract_attachment_urls(raw_attachments)
         if attachment_urls:
             session = self.repository.append_attachments(
                 client_id,
@@ -91,12 +92,23 @@ class AuditOrchestrator:
                 f"{format_session_identity(session)}\n"
                 f"state: {session.state}\n"
                 f"message: {message_text[:120] or '-'}\n"
-                f"attachments_parsed: {len(attachment_urls)}"
+                f"attachments_parsed: {len(attachment_urls)}\n"
+                f"session_screens_total: {len(session.attachments)}\n"
+                f"attachments_raw: {format_debug_value(raw_attachments)}"
             )
         )
         if is_finish_message(message_text):
             if len(session.attachments) < self.settings.session_min_images:
                 remaining = self.settings.session_min_images - len(session.attachments)
+                await self._notify_admins(
+                    (
+                        "Недостаточно скриншотов для запуска аудита.\n"
+                        f"{format_session_identity(session)}\n"
+                        f"received: {len(session.attachments)}\n"
+                        f"required: {self.settings.session_min_images}\n"
+                        f"remaining: {remaining}"
+                    )
+                )
                 await self.salesbot_client.send_callback(
                     client_id=client_id,
                     message=self.settings.salesbot_need_more_message,
@@ -556,33 +568,70 @@ def build_image_input_urls(
 
 
 def extract_attachment_urls(attachments: Any) -> list[str]:
-    parsed = attachments
-    if isinstance(attachments, str):
-        stripped = attachments.strip()
-        if not stripped:
-            return []
-        try:
-            parsed = json.loads(stripped)
-        except json.JSONDecodeError:
-            parsed = [stripped]
-
     urls: list[str] = []
-    if isinstance(parsed, list):
-        for item in parsed:
-            if isinstance(item, str) and item.startswith(("http://", "https://")):
-                urls.append(item)
-            elif isinstance(item, dict):
-                for key in ("url", "file", "href", "link"):
-                    value = item.get(key)
-                    if isinstance(value, str) and value.startswith(("http://", "https://")):
-                        urls.append(value)
-                        break
-    elif isinstance(parsed, dict):
-        for key in ("url", "file", "href", "link"):
-            value = parsed.get(key)
-            if isinstance(value, str) and value.startswith(("http://", "https://")):
-                urls.append(value)
+    seen: set[str] = set()
+
+    def add_url(value: str) -> None:
+        cleaned = value.strip()
+        if cleaned.startswith(("http://", "https://")) and cleaned not in seen:
+            seen.add(cleaned)
+            urls.append(cleaned)
+
+    def walk(node: Any) -> None:
+        if node is None:
+            return
+        if isinstance(node, str):
+            stripped = node.strip()
+            if not stripped:
+                return
+            if stripped.startswith(("http://", "https://")):
+                add_url(stripped)
+                return
+            try:
+                decoded = json.loads(stripped)
+            except json.JSONDecodeError:
+                return
+            walk(decoded)
+            return
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+            return
+        if isinstance(node, dict):
+            for key in (
+                "url",
+                "file",
+                "href",
+                "link",
+                "src",
+                "downloadUrl",
+                "download_url",
+                "imageUrl",
+                "image_url",
+                "preview",
+                "preview_url",
+                "asset_url",
+            ):
+                value = node.get(key)
+                if isinstance(value, str):
+                    add_url(value)
+            for value in node.values():
+                walk(value)
+
+    walk(attachments)
     return urls
+
+
+def format_debug_value(value: Any, *, max_length: int = 400) -> str:
+    if value in (None, "", [], {}):
+        return "-"
+    try:
+        rendered = json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        rendered = str(value)
+    if len(rendered) <= max_length:
+        return rendered
+    return f"{rendered[:max_length]}..."
 
 
 def is_finish_message(message: str) -> bool:

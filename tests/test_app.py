@@ -310,6 +310,61 @@ def test_attachment_dedup_and_cap(tmp_path: Path):
         assert response.json()["attachments_count"] == 2
 
 
+def test_nested_attachment_payloads_are_parsed(tmp_path: Path):
+    client, _, salesbot, telegram = build_client(tmp_path)
+    with client:
+        client.post(
+            "/telegram/webhook",
+            params={"token": "telegram-hook"},
+            json={"message": {"chat": {"id": "1001"}, "from": {"username": "admin"}, "text": "/start"}},
+        )
+        client.post(
+            "/salesbot/session/start",
+            json={"client_id": "42", "project_id": "project-1", "client_type": "instagram"},
+        )
+        client.post(
+            "/salesbot/events",
+            params={"token": "salesbot-token"},
+            json={
+                "client": {"id": "42", "name": "Alice", "client_type": "instagram"},
+                "message": "screen-1",
+                "attachments": [
+                    {
+                        "type": "image",
+                        "payload": {
+                            "file": {
+                                "url": "https://example.com/nested-1.png",
+                            }
+                        },
+                    }
+                ],
+                "is_input": 1,
+            },
+        )
+        response = client.post(
+            "/salesbot/events",
+            params={"token": "salesbot-token"},
+            json={
+                "client": {"id": "42", "name": "Alice", "client_type": "instagram"},
+                "message": "ГОТОВО",
+                "attachments": {
+                    "media": [
+                        {
+                            "image": {
+                                "downloadUrl": "https://example.com/nested-2.png",
+                            }
+                        }
+                    ]
+                },
+                "is_input": 1,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["action"] == "processing_started"
+        assert salesbot.callbacks == []
+        assert any("session_screens_total: 2" in message["text"] for message in telegram.messages)
+
+
 def test_invalid_tokens_are_rejected(tmp_path: Path):
     client, _, _, _ = build_client(tmp_path)
     with client:
