@@ -82,6 +82,15 @@ class AuditOrchestrator:
             )
 
         message_text = str(payload.get("message") or "")
+        await self._notify_admins(
+            (
+                "SalesBot event получен.\n"
+                f"client_id: {client_id}\n"
+                f"state: {session.state}\n"
+                f"message: {message_text[:120] or '-'}\n"
+                f"attachments_parsed: {len(attachment_urls)}"
+            )
+        )
         if is_finish_message(message_text):
             if len(session.attachments) < self.settings.session_min_images:
                 remaining = self.settings.session_min_images - len(session.attachments)
