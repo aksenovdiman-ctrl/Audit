@@ -133,6 +133,14 @@ class AuditOrchestrator:
         try:
             analysis = await self._analyze_session(session.attachments)
             self.repository.save_analysis(job.id, analysis.model_dump())
+            await self._notify_admins(
+                (
+                    "GPT-5.2 анализ завершен.\n"
+                    f"{format_session_identity(session)}\n"
+                    f"score: {analysis.overall_score}\n"
+                    f"niche: {analysis.niche_guess}"
+                )
+            )
             try:
                 image_input_urls = build_image_input_urls(
                     screenshot_urls=session.attachments,
@@ -150,6 +158,13 @@ class AuditOrchestrator:
                 )
                 self.repository.set_image_task(job.id, task_id)
                 self.repository.set_session_state(client_id, "image_pending")
+                await self._notify_admins(
+                    (
+                        "GPT Image 2 createTask отправлен.\n"
+                        f"{format_session_identity(session)}\n"
+                        f"task_id: {task_id}"
+                    )
+                )
             except ExternalAPIError as exc:
                 self.repository.complete_job(
                     job.id,
@@ -289,19 +304,29 @@ class AuditOrchestrator:
         *,
         image_url: str,
     ) -> None:
-        await self.salesbot_client.send_callback(
-            client_id=client_id,
-            message=self.settings.salesbot_ready_message,
-            extra_variables={
-                "audit_text": analysis.dm_audit_text,
-                "audit_image_url": image_url,
-                "overall_score": analysis.overall_score,
-                "niche_guess": analysis.niche_guess,
-                "strengths_json": json.dumps(analysis.strengths, ensure_ascii=False),
-                "problems_json": json.dumps(analysis.problems, ensure_ascii=False),
-                "quick_wins_json": json.dumps(analysis.quick_wins, ensure_ascii=False),
-            },
-        )
+        try:
+            await self.salesbot_client.send_callback(
+                client_id=client_id,
+                message=self.settings.salesbot_ready_message,
+                extra_variables={
+                    "audit_text": analysis.dm_audit_text,
+                    "audit_image_url": image_url,
+                    "overall_score": analysis.overall_score,
+                    "niche_guess": analysis.niche_guess,
+                    "strengths_json": json.dumps(analysis.strengths, ensure_ascii=False),
+                    "problems_json": json.dumps(analysis.problems, ensure_ascii=False),
+                    "quick_wins_json": json.dumps(analysis.quick_wins, ensure_ascii=False),
+                },
+            )
+        except ExternalAPIError as exc:
+            await self._notify_admins(
+                (
+                    "Не удалось отправить результат обратно в SalesBot.\n"
+                    f"client_id: {client_id}\n"
+                    f"error: {exc}"
+                )
+            )
+            raise
 
     async def _mark_failed(
         self,
