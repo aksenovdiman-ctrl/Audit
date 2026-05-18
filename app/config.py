@@ -47,6 +47,8 @@ class Settings:
     session_min_images: int
     session_max_images: int
     http_timeout_seconds: float
+    kie_poll_interval_seconds: float
+    kie_poll_max_attempts: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -78,6 +80,8 @@ class Settings:
             session_min_images=int(os.getenv("SESSION_MIN_IMAGES", "2")),
             session_max_images=int(os.getenv("SESSION_MAX_IMAGES", "2")),
             http_timeout_seconds=float(os.getenv("HTTP_TIMEOUT_SECONDS", "30")),
+            kie_poll_interval_seconds=float(os.getenv("KIE_POLL_INTERVAL_SECONDS", "8")),
+            kie_poll_max_attempts=int(os.getenv("KIE_POLL_MAX_ATTEMPTS", "30")),
         )
 
     def kie_callback_url(self, job_id: int) -> str:

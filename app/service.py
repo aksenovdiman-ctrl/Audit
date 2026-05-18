@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -177,6 +178,7 @@ class AuditOrchestrator:
                         f"task_id: {task_id}"
                     )
                 )
+                await self._poll_kie_task_until_terminal(job_id=job.id, task_id=task_id)
             except ExternalAPIError as exc:
                 self.repository.complete_job(
                     job.id,
@@ -220,12 +222,22 @@ class AuditOrchestrator:
         job_id: int | None,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
+        return await self._finalize_image_task(job_id=job_id, payload=payload)
+
+    async def _finalize_image_task(
+        self,
+        *,
+        job_id: int | None,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
         job = self.repository.get_job_by_id(job_id)
         task_id = extract_task_id(payload)
         if not job and task_id:
             job = self.repository.get_job_by_image_task_id(task_id)
         if not job:
             raise KeyError("Audit job not found")
+        if job.status in {"completed", "completed_text_only", "failed"}:
+            return {"status": "ignored", "reason": "already_finalized"}
 
         session = self.repository.get_session_by_id(job.session_id)
         if not session:
@@ -284,6 +296,40 @@ class AuditOrchestrator:
             )
         )
         return {"status": "text_only", "error": error_message}
+
+    async def _poll_kie_task_until_terminal(self, *, job_id: int, task_id: str) -> None:
+        for attempt in range(1, self.settings.kie_poll_max_attempts + 1):
+            if self.settings.kie_poll_interval_seconds > 0:
+                await asyncio.sleep(self.settings.kie_poll_interval_seconds)
+            job = self.repository.get_job_by_id(job_id)
+            if not job or job.status in {"completed", "completed_text_only", "failed"}:
+                return
+            try:
+                payload = await self.kie_client.get_task_details(task_id)
+            except ExternalAPIError as exc:
+                if attempt == self.settings.kie_poll_max_attempts:
+                    await self._notify_admins(
+                        (
+                            "Не удалось получить статус KIE task по polling.\n"
+                            f"job_id: {job_id}\n"
+                            f"task_id: {task_id}\n"
+                            f"error: {exc}"
+                        )
+                    )
+                continue
+            state = extract_kie_state(payload)
+            if state in {"waiting", "queuing", "generating", None}:
+                continue
+            await self._finalize_image_task(job_id=job_id, payload=payload)
+            return
+
+        await self._notify_admins(
+            (
+                "KIE callback не пришел вовремя, задача осталась в ожидании.\n"
+                f"job_id: {job_id}\n"
+                f"task_id: {task_id}"
+            )
+        )
 
     async def handle_telegram_update(self, payload: dict[str, Any]) -> dict[str, Any]:
         message = payload.get("message") or {}

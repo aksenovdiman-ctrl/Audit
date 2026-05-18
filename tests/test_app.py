@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -17,6 +18,7 @@ class FakeKieClient:
         self.analysis_calls: list[list[str]] = []
         self.image_task_id = "task_gptimage_123"
         self.force_image_failure = False
+        self.task_details_sequence: list[dict] = []
 
     async def analyze_profile(self, image_urls: list[str], prompt: str) -> str:
         self.analysis_calls.append(image_urls)
@@ -51,6 +53,19 @@ class FakeKieClient:
         if self.force_image_failure:
             raise RuntimeError("no image")
         return "https://cdn.example.com/audit-summary.png"
+
+    async def get_task_details(self, task_id: str) -> dict:
+        if self.task_details_sequence:
+            return self.task_details_sequence.pop(0)
+        return {
+            "data": {
+                "taskId": task_id,
+                "state": "success",
+                "resultJson": json.dumps(
+                    {"resultUrls": ["https://cdn.example.com/audit-summary.png"]}
+                ),
+            }
+        }
 
     async def aclose(self) -> None:
         return None
@@ -113,6 +128,8 @@ def build_settings(tmp_path: Path) -> Settings:
         session_min_images=2,
         session_max_images=2,
         http_timeout_seconds=5.0,
+        kie_poll_interval_seconds=0.0,
+        kie_poll_max_attempts=3,
     )
 
 
@@ -197,6 +214,60 @@ def test_happy_path_with_callback_delivery(tmp_path: Path):
             json={"data": {"taskId": "task_gptimage_123", "state": "success"}},
         )
         assert callback_response.status_code == 200
+        assert salesbot.callbacks[-1]["message"] == "audit_ready"
+        assert salesbot.callbacks[-1]["extra_variables"]["audit_image_url"] == "https://cdn.example.com/audit-summary.png"
+        assert telegram.messages[-1]["text"].startswith("Аудит завершен успешно.")
+
+
+def test_polling_delivers_image_without_kie_callback(tmp_path: Path):
+    client, kie, salesbot, telegram = build_client(tmp_path)
+    kie.task_details_sequence = [
+        {"data": {"taskId": "task_gptimage_123", "state": "generating"}},
+        {
+            "data": {
+                "taskId": "task_gptimage_123",
+                "state": "success",
+                "resultJson": '{"resultUrls":["https://cdn.example.com/audit-summary.png"]}',
+            }
+        },
+    ]
+    with client:
+        client.post(
+            "/telegram/webhook",
+            params={"token": "telegram-hook"},
+            json={"message": {"chat": {"id": "1001"}, "from": {"username": "admin"}, "text": "/start"}},
+        )
+        client.post(
+            "/salesbot/session/start",
+            json={
+                "client_id": "42",
+                "project_id": "project-1",
+                "client_type": "instagram",
+                "client_name": "Alice",
+                "instagram_username": "alice_blog",
+            },
+        )
+        response = client.post(
+            "/salesbot/events",
+            params={"token": "salesbot-token"},
+            json=salesbot_payload(
+                client_id="42",
+                message="screens",
+                attachments=[
+                    "https://example.com/1.png",
+                    "https://example.com/2.png",
+                ],
+            ),
+        )
+        assert response.json()["action"] == "attachments_collected"
+
+        response = client.post(
+            "/salesbot/events",
+            params={"token": "salesbot-token"},
+            json=salesbot_payload(client_id="42", message="ГОТОВО", attachments=[]),
+        )
+        assert response.status_code == 200
+        assert response.json()["action"] == "processing_started"
         assert salesbot.callbacks[-1]["message"] == "audit_ready"
         assert salesbot.callbacks[-1]["extra_variables"]["audit_image_url"] == "https://cdn.example.com/audit-summary.png"
         assert telegram.messages[-1]["text"].startswith("Аудит завершен успешно.")
@@ -361,7 +432,7 @@ def test_nested_attachment_payloads_are_parsed(tmp_path: Path):
         )
         assert response.status_code == 200
         assert response.json()["action"] == "processing_started"
-        assert salesbot.callbacks == []
+        assert salesbot.callbacks[-1]["message"] == "audit_ready"
         assert any("session_screens_total: 2" in message["text"] for message in telegram.messages)
 
 
@@ -422,7 +493,12 @@ def test_invalid_tokens_are_rejected(tmp_path: Path):
 
 
 def test_text_only_delivery_if_image_callback_fails(tmp_path: Path):
-    client, _, salesbot, _ = build_client(tmp_path)
+    client, kie, salesbot, _ = build_client(tmp_path)
+    kie.task_details_sequence = [
+        {"data": {"taskId": "task_gptimage_123", "state": "generating"}},
+        {"data": {"taskId": "task_gptimage_123", "state": "generating"}},
+        {"data": {"taskId": "task_gptimage_123", "state": "generating"}},
+    ]
     with client:
         client.post(
             "/salesbot/session/start",
