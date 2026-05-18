@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 from typing import Any, Iterable, Sequence
+from urllib.parse import urlparse
 
 import httpx
 
@@ -46,26 +48,15 @@ class KieClient:
         input_urls: Sequence[str],
         aspect_ratio: str = "3:4",
     ) -> str:
-        urls = list(input_urls)
-        if not self.settings.use_direct_attachment_urls:
-            urls = await self._upload_remote_images(urls)
-        try:
-            return await self._create_task(
-                prompt=prompt,
-                callback_url=callback_url,
-                input_urls=urls,
-                aspect_ratio=aspect_ratio,
-            )
-        except ExternalAPIError:
-            if not self.settings.use_direct_attachment_urls:
-                raise
-            uploaded_urls = await self._upload_remote_images(urls)
-            return await self._create_task(
-                prompt=prompt,
-                callback_url=callback_url,
-                input_urls=uploaded_urls,
-                aspect_ratio=aspect_ratio,
-            )
+        # GPT Image 2 rejects some signed messenger URLs directly, so always
+        # upload generation inputs to KIE first and pass the stable download URLs.
+        uploaded_urls = await self._upload_remote_images(list(input_urls))
+        return await self._create_task(
+            prompt=prompt,
+            callback_url=callback_url,
+            input_urls=uploaded_urls,
+            aspect_ratio=aspect_ratio,
+        )
 
     async def _create_task(
         self,
@@ -95,9 +86,13 @@ class KieClient:
             json=payload,
         )
         payload = self._decode_json(response)
+        if payload.get("code") not in (None, 0, 200) and not payload.get("data"):
+            raise ExternalAPIError(
+                f"KIE image task rejected ({payload.get('code')}): {payload.get('msg') or payload}"
+            )
         try:
             return str(payload["data"]["taskId"])
-        except KeyError as exc:
+        except (KeyError, TypeError) as exc:
             raise ExternalAPIError(f"Unexpected KIE image task response: {payload}") from exc
 
     async def resolve_image_url(
@@ -151,8 +146,13 @@ class KieClient:
         for index, source_url in enumerate(image_urls, start=1):
             download = await self._client.get(source_url)
             download.raise_for_status()
-            filename = source_url.rsplit("/", 1)[-1] or f"image-{index}.png"
-            files = {"file": (filename, download.content, download.headers.get("content-type"))}
+            content_type = download.headers.get("content-type", "application/octet-stream")
+            filename = self._guess_filename(
+                source_url=source_url,
+                index=index,
+                content_type=content_type,
+            )
+            files = {"file": (filename, download.content, content_type)}
             response = await self._client.post(
                 f"{self.settings.kie_file_upload_base_url}/api/file-stream-upload",
                 headers={"Authorization": f"Bearer {self.settings.kie_api_key}"},
@@ -168,6 +168,14 @@ class KieClient:
             except KeyError as exc:
                 raise ExternalAPIError(f"Unexpected KIE file upload response: {payload}") from exc
         return uploaded_urls
+
+    @staticmethod
+    def _guess_filename(*, source_url: str, index: int, content_type: str) -> str:
+        path_name = urlparse(source_url).path.rsplit("/", 1)[-1]
+        if "." in path_name:
+            return path_name
+        extension = mimetypes.guess_extension(content_type.split(";", 1)[0].strip()) or ".png"
+        return f"image-{index}{extension}"
 
     @staticmethod
     def _extract_image_url(payload: dict[str, Any]) -> str | None:
