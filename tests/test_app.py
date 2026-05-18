@@ -202,6 +202,25 @@ def test_happy_path_with_callback_delivery(tmp_path: Path):
         assert telegram.messages[-1]["text"].startswith("Аудит завершен успешно.")
 
 
+def test_session_start_accepts_json_string_payload(tmp_path: Path):
+    client, _, _, telegram = build_client(tmp_path)
+    with client:
+        client.post(
+            "/telegram/webhook",
+            params={"token": "telegram-hook"},
+            json={"message": {"chat": {"id": "1001"}, "from": {"username": "admin"}, "text": "/start"}},
+        )
+        response = client.post(
+            "/salesbot/session/start",
+            json='{\n  "client_id": "947100401"\n}',
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+        assert response.json()["client_id"] == "947100401"
+        assert response.json()["state"] == "waiting_screens"
+        assert telegram.messages[-1]["text"].startswith("Новая сессия аудита открыта.")
+
+
 def test_need_more_screens_callback(tmp_path: Path):
     client, _, salesbot, _ = build_client(tmp_path)
     with client:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, status
+from pydantic import ValidationError
 from fastapi.staticfiles import StaticFiles
 
 from app.clients import KieClient, SalesBotClient, TelegramBotClient
@@ -62,7 +64,23 @@ def create_app(
         return HealthResponse(status="ok")
 
     @app.post("/salesbot/session/start")
-    async def start_session(payload: SessionStartRequest) -> dict[str, Any]:
+    async def start_session(request: Request) -> dict[str, Any]:
+        payload_raw = await request.json()
+        if isinstance(payload_raw, str):
+            try:
+                payload_raw = json.loads(payload_raw)
+            except json.JSONDecodeError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid JSON string payload: {exc}",
+                ) from exc
+        try:
+            payload = SessionStartRequest.model_validate(payload_raw)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=exc.errors(),
+            ) from exc
         return await orchestrator.open_session(payload)
 
     @app.post("/salesbot/events")
