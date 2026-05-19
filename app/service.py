@@ -440,15 +440,21 @@ class AuditOrchestrator:
             max_images=self.settings.session_max_images,
         )
         raw_content = await self.kie_client.analyze_profile(image_urls=image_urls, prompt=prompt)
-        cleaned = extract_json_document(raw_content)
         try:
+            cleaned = extract_json_document(raw_content)
             return AnalysisPayload.model_validate_json(cleaned)
         except ValidationError as exc:
-            snippet = raw_content[:800].replace("\n", " ")
-            raise ExternalAPIError(
-                f"GPT-5.2 вернул ответ, но не в ожидаемом JSON-формате: {exc}. "
-                f"raw_snippet={snippet}"
-            ) from exc
+            repaired_content = await self.kie_client.repair_analysis_json(raw_content)
+            try:
+                cleaned_repaired = extract_json_document(repaired_content)
+                return AnalysisPayload.model_validate_json(cleaned_repaired)
+            except ValidationError as repair_exc:
+                snippet = raw_content[:800].replace("\n", " ")
+                repaired_snippet = repaired_content[:800].replace("\n", " ")
+                raise ExternalAPIError(
+                    "GPT-5.2 вернул ответ, но не в ожидаемом JSON-формате даже после repair-step: "
+                    f"{repair_exc}. raw_snippet={snippet}. repaired_snippet={repaired_snippet}"
+                ) from repair_exc
 
     async def _deliver_ready(
         self,

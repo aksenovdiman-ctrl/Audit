@@ -52,6 +52,29 @@ class KieClient:
             input_urls=None,
         )
 
+    async def repair_analysis_json(self, raw_content: str) -> str:
+        prompt = (
+            "Ниже сырой ответ модели аудита Instagram-профиля. "
+            "Преобразуй его в строгий JSON без markdown и без пояснений.\n\n"
+            "Нужный формат:\n"
+            "{\n"
+            '  "overall_score": 0,\n'
+            '  "niche_guess": "строка",\n'
+            '  "strengths": ["строка"],\n'
+            '  "problems": ["строка"],\n'
+            '  "quick_wins": ["строка"],\n'
+            '  "dm_audit_text": "строка",\n'
+            '  "image_brief": "строка"\n'
+            "}\n\n"
+            "Не добавляй новые факты. Используй только то, что уже есть в сыром ответе.\n\n"
+            f"Сырой ответ:\n{raw_content}"
+        )
+        return await self._chat_completion(
+            prompt=prompt,
+            image_urls=[],
+            reasoning_effort="low",
+        )
+
     async def create_image_to_image_task(
         self,
         *,
