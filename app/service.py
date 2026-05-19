@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +11,7 @@ from app.clients import ExternalAPIError, KieClient, SalesBotClient, TelegramBot
 from app.config import Settings
 from app.models import AnalysisPayload, SessionStartRequest
 from app.storage import AuditJobRecord, SQLiteRepository
+from pydantic import ValidationError
 
 
 FINISH_KEYWORDS = {"ГОТОВО", "ГОТОВ", "READY", "DONE"}
@@ -37,6 +39,7 @@ class AuditOrchestrator:
         self.kie_client = kie_client
         self.salesbot_client = salesbot_client
         self.telegram_client = telegram_client
+        self._recent_event_keys: dict[str, float] = {}
 
     async def open_session(self, payload: SessionStartRequest) -> dict[str, Any]:
         session = self.repository.start_session(
@@ -87,6 +90,13 @@ class AuditOrchestrator:
             )
 
         message_text = str(payload.get("message") or "")
+        if self._is_duplicate_event(
+            client_id=client_id,
+            message_text=message_text,
+            attachment_urls=attachment_urls,
+            raw_attachments=raw_attachments,
+        ):
+            return EventResult("ignored_duplicate_event", False, len(session.attachments))
         await self._notify_admins(
             (
                 "SalesBot event получен.\n"
@@ -431,7 +441,14 @@ class AuditOrchestrator:
         )
         raw_content = await self.kie_client.analyze_profile(image_urls=image_urls, prompt=prompt)
         cleaned = extract_json_document(raw_content)
-        return AnalysisPayload.model_validate_json(cleaned)
+        try:
+            return AnalysisPayload.model_validate_json(cleaned)
+        except ValidationError as exc:
+            snippet = raw_content[:800].replace("\n", " ")
+            raise ExternalAPIError(
+                f"GPT-5.2 вернул ответ, но не в ожидаемом JSON-формате: {exc}. "
+                f"raw_snippet={snippet}"
+            ) from exc
 
     async def _deliver_ready(
         self,
@@ -492,6 +509,36 @@ class AuditOrchestrator:
         if not admins:
             return
         await self.telegram_client.broadcast(admins=admins, text=text)
+
+    def _is_duplicate_event(
+        self,
+        *,
+        client_id: str,
+        message_text: str,
+        attachment_urls: list[str],
+        raw_attachments: Any,
+    ) -> bool:
+        normalized_message = re.sub(r"\s+", " ", message_text or "").strip().upper()
+        key = json.dumps(
+            {
+                "client_id": client_id,
+                "message": normalized_message,
+                "attachments": sorted(attachment_urls),
+                "raw": format_debug_value(raw_attachments, max_length=200),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+        )
+        now = time.monotonic()
+        expires_before = now - 120
+        self._recent_event_keys = {
+            existing_key: ts
+            for existing_key, ts in self._recent_event_keys.items()
+            if ts >= expires_before
+        }
+        previous = self._recent_event_keys.get(key)
+        self._recent_event_keys[key] = now
+        return previous is not None
 
 
 def build_analysis_prompt(*, min_images: int, max_images: int) -> str:
