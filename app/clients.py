@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 from typing import Any, Iterable, Sequence
@@ -25,7 +26,24 @@ class KieClient:
         # Messenger/CDN signed URLs are unstable for upstream multimodal analysis too,
         # so normalize them through KIE file upload before calling GPT-5.2.
         uploaded_urls = await self._upload_remote_images(list(image_urls))
-        return await self._chat_completion(prompt=prompt, image_urls=uploaded_urls)
+        last_error: ExternalAPIError | None = None
+        reasoning_sequence = self._analysis_reasoning_sequence()
+        for attempt, reasoning_effort in enumerate(reasoning_sequence, start=1):
+            try:
+                return await self._chat_completion(
+                    prompt=prompt,
+                    image_urls=uploaded_urls,
+                    reasoning_effort=reasoning_effort,
+                )
+            except ExternalAPIError as exc:
+                last_error = exc
+                if not self._is_retryable_analysis_error(exc):
+                    break
+                if attempt < len(reasoning_sequence):
+                    await asyncio.sleep(min(attempt, 2))
+        if last_error:
+            raise last_error
+        raise ExternalAPIError("KIE analysis failed without a captured exception")
 
     async def create_image_task(self, prompt: str, callback_url: str) -> str:
         return await self._create_task(
@@ -112,7 +130,13 @@ class KieClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
-    async def _chat_completion(self, *, prompt: str, image_urls: Sequence[str]) -> str:
+    async def _chat_completion(
+        self,
+        *,
+        prompt: str,
+        image_urls: Sequence[str],
+        reasoning_effort: str,
+    ) -> str:
         content = [{"type": "text", "text": prompt}]
         content.extend(
             {
@@ -126,7 +150,7 @@ class KieClient:
             headers=self._auth_headers(),
             json={
                 "messages": [{"role": "user", "content": content}],
-                "reasoning_effort": self.settings.kie_reasoning_effort,
+                "reasoning_effort": reasoning_effort,
             },
         )
         payload = self._decode_json(response)
@@ -221,6 +245,21 @@ class KieClient:
             raise ExternalAPIError(
                 f"Upstream request failed ({response.status_code}): {response.text}"
             ) from exc
+
+    def _analysis_reasoning_sequence(self) -> list[str]:
+        primary = (self.settings.kie_reasoning_effort or "high").strip().lower()
+        if primary == "high":
+            return ["high", "medium", "low"]
+        if primary == "medium":
+            return ["medium", "low"]
+        return [primary]
+
+    @staticmethod
+    def _is_retryable_analysis_error(error: ExternalAPIError) -> bool:
+        text = str(error).lower()
+        return any(code in text for code in ("(500)", "(502)", "(503)", "(504)", "(429)")) or (
+            "server exception" in text
+        )
 
 
 class SalesBotClient:
