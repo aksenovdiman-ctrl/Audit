@@ -128,10 +128,31 @@ class AuditOrchestrator:
                     f"{format_session_identity(session)}\n"
                     f"screens: {len(session.attachments)}"
                 )
-            )
+                )
             return EventResult("processing_started", True, len(session.attachments))
 
         if attachment_urls:
+            if len(session.attachments) < self.settings.session_min_images:
+                remaining = self.settings.session_min_images - len(session.attachments)
+                await self.salesbot_client.send_callback(
+                    client_id=client_id,
+                    message=self.settings.salesbot_need_more_message,
+                    extra_variables={
+                        "screens_received": len(session.attachments),
+                        "screens_required": self.settings.session_min_images,
+                        "screens_remaining": remaining,
+                    },
+                )
+                await self._notify_admins(
+                    (
+                        "Пользователю отправлено напоминание о недостающих скриншотах.\n"
+                        f"{format_session_identity(session)}\n"
+                        f"received: {len(session.attachments)}\n"
+                        f"required: {self.settings.session_min_images}\n"
+                        f"remaining: {remaining}"
+                    )
+                )
+                return EventResult("partial_attachments_collected", False, len(session.attachments))
             return EventResult("attachments_collected", False, len(session.attachments))
         return EventResult("message_ignored", False, len(session.attachments))
 
