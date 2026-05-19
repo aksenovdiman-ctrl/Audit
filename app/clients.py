@@ -22,16 +22,10 @@ class KieClient:
         )
 
     async def analyze_profile(self, image_urls: Sequence[str], prompt: str) -> str:
-        urls = list(image_urls)
-        if not self.settings.use_direct_attachment_urls:
-            urls = await self._upload_remote_images(urls)
-        try:
-            return await self._chat_completion(prompt=prompt, image_urls=urls)
-        except ExternalAPIError:
-            if not self.settings.use_direct_attachment_urls:
-                raise
-            uploaded_urls = await self._upload_remote_images(urls)
-            return await self._chat_completion(prompt=prompt, image_urls=uploaded_urls)
+        # Messenger/CDN signed URLs are unstable for upstream multimodal analysis too,
+        # so normalize them through KIE file upload before calling GPT-5.2.
+        uploaded_urls = await self._upload_remote_images(list(image_urls))
+        return await self._chat_completion(prompt=prompt, image_urls=uploaded_urls)
 
     async def create_image_task(self, prompt: str, callback_url: str) -> str:
         return await self._create_task(
