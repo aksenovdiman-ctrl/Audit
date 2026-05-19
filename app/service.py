@@ -174,7 +174,34 @@ class AuditOrchestrator:
         if not job:
             job = self.repository.create_job(session.id, "analyzing")
 
+        image_task_id: str | None = None
+        image_task_start_error: ExternalAPIError | None = None
         try:
+            try:
+                image_input_urls = build_image_input_urls(
+                    screenshot_urls=session.attachments,
+                    style_reference_url=self.settings.style_reference_image_url,
+                )
+                image_prompt = build_direct_image_prompt(
+                    brand_name=self.settings.brand_name,
+                )
+                image_task_id = await self.kie_client.create_image_to_image_task(
+                    prompt=image_prompt,
+                    callback_url=self.settings.kie_callback_url(job.id),
+                    input_urls=image_input_urls,
+                    aspect_ratio="3:4",
+                )
+                self.repository.set_image_task(job.id, image_task_id, status="image_queued")
+                await self._notify_admins(
+                    (
+                        "GPT Image 2 createTask отправлен.\n"
+                        f"{format_session_identity(session)}\n"
+                        f"task_id: {image_task_id}"
+                    )
+                )
+            except ExternalAPIError as exc:
+                image_task_start_error = exc
+
             analysis = await self._analyze_session(session.attachments)
             self.repository.save_analysis(job.id, analysis.model_dump())
             await self._notify_admins(
@@ -185,36 +212,11 @@ class AuditOrchestrator:
                     f"niche: {analysis.niche_guess}"
                 )
             )
-            try:
-                image_input_urls = build_image_input_urls(
-                    screenshot_urls=session.attachments,
-                    style_reference_url=self.settings.style_reference_image_url,
-                )
-                image_prompt = build_image_prompt(
-                    analysis=analysis,
-                    brand_name=self.settings.brand_name,
-                )
-                task_id = await self.kie_client.create_image_to_image_task(
-                    prompt=image_prompt,
-                    callback_url=self.settings.kie_callback_url(job.id),
-                    input_urls=image_input_urls,
-                    aspect_ratio="3:4",
-                )
-                self.repository.set_image_task(job.id, task_id)
-                self.repository.set_session_state(client_id, "image_pending")
-                await self._notify_admins(
-                    (
-                        "GPT Image 2 createTask отправлен.\n"
-                        f"{format_session_identity(session)}\n"
-                        f"task_id: {task_id}"
-                    )
-                )
-                await self._poll_kie_task_until_terminal(job_id=job.id, task_id=task_id)
-            except ExternalAPIError as exc:
+            if image_task_start_error:
                 self.repository.complete_job(
                     job.id,
                     status="completed_text_only",
-                    error=str(exc),
+                    error=str(image_task_start_error),
                 )
                 self.repository.set_session_state(client_id, "completed")
                 await self._deliver_ready(client_id, analysis, image_url="")
@@ -223,9 +225,14 @@ class AuditOrchestrator:
                         "Изображение не сгенерировалось на этапе createTask, "
                         "отправлен текстовый аудит.\n"
                         f"{format_session_identity(session)}\n"
-                        f"error: {exc}"
+                        f"error: {image_task_start_error}"
                     )
                 )
+                return
+
+            if image_task_id:
+                self.repository.set_session_state(client_id, "image_pending")
+                await self._poll_kie_task_until_terminal(job_id=job.id, task_id=image_task_id)
         except ExternalAPIError as exc:
             await self._mark_failed(
                 client_id=client_id,
@@ -269,6 +276,8 @@ class AuditOrchestrator:
             raise KeyError("Audit job not found")
         if job.status in {"completed", "completed_text_only", "failed"}:
             return {"status": "ignored", "reason": "already_finalized"}
+        if not job.analysis:
+            return {"status": "waiting_for_analysis"}
 
         session = self.repository.get_session_by_id(job.session_id)
         if not session:
@@ -585,10 +594,7 @@ def build_analysis_prompt(*, min_images: int, max_images: int) -> str:
 """.strip()
 
 
-def build_image_prompt(*, analysis: AnalysisPayload, brand_name: str) -> str:
-    strengths = "; ".join(analysis.strengths[:3])
-    problems = "; ".join(analysis.problems[:4])
-    quick_wins = "; ".join(analysis.quick_wins[:4])
+def build_direct_image_prompt(*, brand_name: str) -> str:
     return f"""
 Создай изображение в формате 3:4 — handwritten аудит Instagram-профиля в стиле Pinterest bullet journal.
 
@@ -716,14 +722,6 @@ REELS → STORIES → DIRECT → TELEGRAM → ПРОДАЖА
 
 Главное:
 итог должен выглядеть как реальная handwritten-страница разбора профиля от сильного маркетолога, а не как шаблонный digital-дизайн.
-
-Дополнительные ориентиры по анализу профиля:
-— Общая оценка: {analysis.overall_score}/100
-— Предполагаемая ниша: {analysis.niche_guess}
-— Сильные стороны: {strengths}
-— Точки роста и слабые места: {problems}
-— Что усилит продажи в первую очередь: {quick_wins}
-— Дополнительный бриф: {analysis.image_brief}
 """.strip()
 
 
