@@ -285,6 +285,15 @@ class AuditOrchestrator:
             return {"status": "ok", "image_url": image_url}
 
         error_message = extract_kie_error(payload) or "KIE image generation failed"
+        if self._should_retry_safe_image(job=job, error_message=error_message):
+            retry_started = await self._retry_safe_image_generation(
+                job=job,
+                session=session,
+                analysis=analysis,
+                original_error=error_message,
+            )
+            if retry_started:
+                return {"status": "retrying_safe_image", "error": error_message}
         self.repository.complete_job(job.id, status="completed_text_only", error=error_message)
         self.repository.set_session_state(session.client_id, "completed")
         await self._deliver_ready(session.client_id, analysis, image_url="")
@@ -330,6 +339,54 @@ class AuditOrchestrator:
                 f"task_id: {task_id}"
             )
         )
+
+    async def _retry_safe_image_generation(
+        self,
+        *,
+        job: AuditJobRecord,
+        session: Any,
+        analysis: AnalysisPayload,
+        original_error: str,
+    ) -> bool:
+        safe_prompt = build_safe_fallback_image_prompt(
+            analysis=analysis,
+            brand_name=self.settings.brand_name,
+        )
+        try:
+            retry_task_id = await self.kie_client.create_image_task(
+                prompt=safe_prompt,
+                callback_url=self.settings.kie_callback_url(job.id),
+            )
+        except ExternalAPIError as exc:
+            await self._notify_admins(
+                (
+                    "Безопасный retry для GPT Image 2 тоже не стартовал.\n"
+                    f"{format_session_identity(session)}\n"
+                    f"original_error: {original_error}\n"
+                    f"retry_error: {exc}"
+                )
+            )
+            return False
+
+        self.repository.set_image_task(job.id, retry_task_id, status="image_retry_pending")
+        self.repository.set_session_state(session.client_id, "image_pending")
+        await self._notify_admins(
+            (
+                "GPT Image 2 policy retry запущен.\n"
+                f"{format_session_identity(session)}\n"
+                f"original_error: {original_error}\n"
+                f"retry_task_id: {retry_task_id}"
+            )
+        )
+        await self._poll_kie_task_until_terminal(job_id=job.id, task_id=retry_task_id)
+        return True
+
+    @staticmethod
+    def _should_retry_safe_image(*, job: AuditJobRecord, error_message: str) -> bool:
+        normalized = (error_message or "").lower()
+        if "content polic" not in normalized:
+            return False
+        return job.status != "image_retry_pending"
 
     async def handle_telegram_update(self, payload: dict[str, Any]) -> dict[str, Any]:
         message = payload.get("message") or {}
@@ -466,16 +523,11 @@ def build_image_prompt(*, analysis: AnalysisPayload, brand_name: str) -> str:
 
 1 и 2 изображения — скрины Instagram-профиля.
 Используй из них:
-— аватарку
-— ник
-— имя
-— описание
-— статистику
-— хайлайтсы
-— посты
-— визуал ленты
-— оформление профиля
-— контент профиля.
+— общую структуру профиля
+— смысл био и позиционирования
+— визуальное настроение ленты
+— типы контента
+— блоки со статистикой и хайлайтсами в обобщенном виде
 
 3 изображение — референс стиля.
 Используй ТОЛЬКО его стиль:
@@ -494,6 +546,8 @@ def build_image_prompt(*, analysis: AnalysisPayload, brand_name: str) -> str:
 Только визуальный стиль.
 
 Сделай итог как полноценную handwritten-страницу маркетингового разбора профиля для бренда {brand_name}.
+Не воспроизводи буквально реальные лица, фото людей, никнеймы, интерфейс Instagram, логотипы или точные элементы UI.
+Вместо этого используй стилизованные заглушки, схематичные блоки профиля и обобщенные подписи без персональных данных.
 
 Стиль:
 живой Pinterest planner / handwritten notebook / aesthetic journal.
@@ -523,14 +577,11 @@ Doodles.
 
 Ниже:
 сделай handwritten-блок профиля на основе 1 и 2 изображений:
-— аватарка
-— ник
-— имя
-— статистика
-— описание
-— ссылка
-— хайлайтсы
-— мини-превью постов.
+— схематичный блок профиля
+— обобщенная статистика
+— краткое описание позиционирования
+— условные иконки хайлайтсов
+— мини-превью постов без точного копирования лиц, текстов и интерфейса.
 
 Добавь МНОГО handwritten-анализа по профилю.
 
@@ -599,6 +650,40 @@ REELS → STORIES → DIRECT → TELEGRAM → ПРОДАЖА
 — Точки роста и слабые места: {problems}
 — Что усилит продажи в первую очередь: {quick_wins}
 — Дополнительный бриф: {analysis.image_brief}
+""".strip()
+
+
+def build_safe_fallback_image_prompt(*, analysis: AnalysisPayload, brand_name: str) -> str:
+    strengths = "; ".join(analysis.strengths[:3])
+    problems = "; ".join(analysis.problems[:4])
+    quick_wins = "; ".join(analysis.quick_wins[:4])
+    return f"""
+Создай одну оригинальную summary-card в формате 3:4 для бренда {brand_name}.
+
+Задача:
+— не использовать реальные фото людей
+— не показывать никнеймы, имена, аватары или точный интерфейс Instagram
+— не использовать логотипы и узнаваемые элементы сторонних платформ
+— сделать безопасную, нейтральную handwritten-page в стиле aesthetic bullet journal
+
+Визуальный стиль:
+— белая бумага в клетку
+— handwritten notes
+— pastel highlighters
+— doodles
+— стрелки
+— чекбоксы
+— стикеры
+— planner / notebook vibe
+
+Покажи только обобщенный маркетинговый разбор:
+— Общая оценка: {analysis.overall_score}/100
+— Ниша: {analysis.niche_guess}
+— Сильные стороны: {strengths}
+— Точки роста: {problems}
+— Быстрые улучшения: {quick_wins}
+
+Сделай композицию как заметки сильного маркетолога, но без персональных данных и без копирования чьего-либо профиля.
 """.strip()
 
 

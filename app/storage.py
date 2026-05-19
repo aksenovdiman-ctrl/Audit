@@ -291,7 +291,13 @@ class SQLiteRepository:
             )
         return self.get_job_by_id(job_id)  # type: ignore[return-value]
 
-    def set_image_task(self, job_id: int, image_task_id: str) -> AuditJobRecord:
+    def set_image_task(
+        self,
+        job_id: int,
+        image_task_id: str,
+        *,
+        status: str = "image_pending",
+    ) -> AuditJobRecord:
         now = utcnow_iso()
         with self._connect() as conn:
             conn.execute(
@@ -300,7 +306,7 @@ class SQLiteRepository:
                 SET image_task_id = ?, status = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (image_task_id, "image_pending", now, job_id),
+                (image_task_id, status, now, job_id),
             )
         return self.get_job_by_id(job_id)  # type: ignore[return-value]
 

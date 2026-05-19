@@ -19,6 +19,7 @@ class FakeKieClient:
         self.image_task_id = "task_gptimage_123"
         self.force_image_failure = False
         self.task_details_sequence: list[dict] = []
+        self.next_text_task_id = "task_gptimage_retry"
 
     async def analyze_profile(self, image_urls: list[str], prompt: str) -> str:
         self.analysis_calls.append(image_urls)
@@ -35,7 +36,7 @@ class FakeKieClient:
 
     async def create_image_task(self, prompt: str, callback_url: str) -> str:
         self.created_prompts.append(prompt)
-        return self.image_task_id
+        return self.next_text_task_id
 
     async def create_image_to_image_task(
         self,
@@ -271,6 +272,64 @@ def test_polling_delivers_image_without_kie_callback(tmp_path: Path):
         assert salesbot.callbacks[-1]["message"] == "audit_ready"
         assert salesbot.callbacks[-1]["extra_variables"]["audit_image_url"] == "https://cdn.example.com/audit-summary.png"
         assert telegram.messages[-1]["text"].startswith("Аудит завершен успешно.")
+
+
+def test_policy_failure_retries_with_safe_image_prompt(tmp_path: Path):
+    client, kie, salesbot, telegram = build_client(tmp_path)
+    kie.task_details_sequence = [
+        {
+            "data": {
+                "taskId": "task_gptimage_123",
+                "state": "fail",
+                "failMsg": "Sorry, but the image we created may violate OpenAI's content policies.",
+            }
+        },
+        {
+            "data": {
+                "taskId": "task_gptimage_retry",
+                "state": "success",
+                "resultJson": '{"resultUrls":["https://cdn.example.com/audit-summary.png"]}',
+            }
+        },
+    ]
+    with client:
+        client.post(
+            "/telegram/webhook",
+            params={"token": "telegram-hook"},
+            json={"message": {"chat": {"id": "1001"}, "from": {"username": "admin"}, "text": "/start"}},
+        )
+        client.post(
+            "/salesbot/session/start",
+            json={
+                "client_id": "42",
+                "project_id": "project-1",
+                "client_type": "instagram",
+                "client_name": "Alice",
+                "instagram_username": "alice_blog",
+            },
+        )
+        client.post(
+            "/salesbot/events",
+            params={"token": "salesbot-token"},
+            json=salesbot_payload(
+                client_id="42",
+                message="screens",
+                attachments=[
+                    "https://example.com/1.png",
+                    "https://example.com/2.png",
+                ],
+            ),
+        )
+        response = client.post(
+            "/salesbot/events",
+            params={"token": "salesbot-token"},
+            json=salesbot_payload(client_id="42", message="ГОТОВО", attachments=[]),
+        )
+        assert response.status_code == 200
+        assert salesbot.callbacks[-1]["message"] == "audit_ready"
+        assert salesbot.callbacks[-1]["extra_variables"]["audit_image_url"] == "https://cdn.example.com/audit-summary.png"
+        assert any("policy retry запущен" in message["text"] for message in telegram.messages)
+        assert len(kie.created_prompts) == 2
 
 
 def test_session_start_accepts_json_string_payload(tmp_path: Path):
