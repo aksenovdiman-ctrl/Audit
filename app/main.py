@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from app.clients import KieClient, SalesBotClient, TelegramBotClient
 from app.config import Settings, get_settings
 from app.models import HealthResponse, SessionInputRequest, SessionStartRequest
-from app.service import AuditOrchestrator
+from app.service import AuditOrchestrator, extract_attachment_urls
 from app.storage import SQLiteRepository
 
 
@@ -91,6 +91,11 @@ def create_app(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=exc.errors(),
             ) from exc
+        combined_attachments = []
+        for source in (payload.attachments, payload.attachment_url):
+            for url in extract_attachment_urls(source):
+                if url not in combined_attachments:
+                    combined_attachments.append(url)
         normalized_payload = {
             "is_input": 1,
             "client": {
@@ -100,11 +105,7 @@ def create_app(
                 "instagram_username": payload.instagram_username,
             },
             "message": payload.message or "",
-            "attachments": (
-                payload.attachments
-                if payload.attachments not in (None, "")
-                else payload.attachment_url or []
-            ),
+            "attachments": combined_attachments,
         }
         result = await orchestrator.ingest_salesbot_event(normalized_payload)
         if result.schedule_processing:
